@@ -38,7 +38,7 @@ async def select(sql,args,size=None):#封装select操作函数
                 rs = await cur.fetchmany(size)
             else:
                 rs = await cur.fetchall()
-
+            await cur.close()
             logging.info('rows returned: %s' % len(rs))
             return rs
 
