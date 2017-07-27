@@ -7,7 +7,7 @@ from datetime import datetime
 
 from aiohttp import web
 
-def index(request): #使用async替代 @asyncio.coroutine装饰器，异步允许的函数
+def index(request): #使用async替代 @asyncio.coroutine装饰器，允许异步的函数
     return web.Response(body=b'<h1>Awesome</h1>')
 
 async def init(loop):
