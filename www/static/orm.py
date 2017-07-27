@@ -38,7 +38,6 @@ async def select(sql,args,size=None):#封装select操作函数
                 rs = await cur.fetchmany(size)
             else:
                 rs = await cur.fetchall()
-            await cur.close()
             logging.info('rows returned: %s' % len(rs))
             return rs
 
@@ -56,11 +55,12 @@ async def execute(sql,args,autocommit=True):#Insert、Update、Delete操作的�
                 affected = cur.rowcount
             if not autocommit:
                 await conn.commit()
-            await cur.close()#如果报错，可删除该句，在廖老师github没有
         except BaseException as e:
             if not autocommit:
                 await conn.rollback()
             raise
+        finally:
+            conn.close()
         return affected
 
 def creat_args_string(num):
