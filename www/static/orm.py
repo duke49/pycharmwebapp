@@ -1,324 +1,261 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-__author__ = 'duke'
-
-import asyncio,logging
+import asyncio, logging
 import aiomysql
 
-def log(sql,args=()):
-    logging.info('SQL:%s' %sql) #打印出sql的日志
-#创建连接池
-async def creat_pool(loop,**kw):
-        logging.info('create database connection pool...')
-        global __pool
-        #初始化连接池参数
-        __pool = await aiomysql.create_pool(
-            host = kw.get('host', 'localhost'),
-            port = kw.get('port', 3306),
-            user = kw['user'],
-            password = kw['password'],
-            db = kw['db'],
-            charset = kw.get('charset', 'utf-8'),
-            autocommit = kw.get('autocommit', True),
-            maxsize = kw.get('maxsize', 10),
-            minsize = kw.get('minsize',1),
-            loop = loop
-    )
-
-#销毁连接池
-async def destory_pool():
-        global __pool
-        if __pool is not None:
-            __pool.close()
-            await __pool.wait_close()
-
-#sql日志文件输出
-def log(sql,args=()):
+def log(sql, args=()):
     logging.info('SQL: %s' % sql)
 
-#SELECT语句  
-async def select(sql,args,size=None):
-        log(sql,args)
-        global __pool
-        #创建一个结果为字典的游标
-        async with __pool.get() as conn:
+# 创建连接池,每个http请求都从连接池连接到数据库
+async def create_pool(loop, **kw):
+    logging.info('create database connection pool...')
+    global __pool
+    __pool = await aiomysql.create_pool(
+        host=kw.get('host', 'localhost'),
+        port=kw.get('port', 3306),
+        user=kw['user'],
+        password=kw['password'],
+        db=kw['db'],
+        charset=kw.get('charset', 'utf8'),
+        autocommit=kw.get('autocommit', True),
+        maxsize=kw.get('maxsize', 10),
+        minsize=kw.get('minsize', 1),
+        loop=loop
+    )
+
+# 销毁连接池
+async def destory_pool():
+    global __pool
+    if __pool is not None:
+        __pool.close()
+        await __pool.wait_closed()
+
+# select语句
+async def select(sql, args, size=None):
+    log(sql, args)
+    global __pool
+    async with __pool.get() as conn:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute(sql.replace('?', '%s'), args or ())
+            if size:
+                rs = await cur.fetchmany(size)
+            else:
+                rs = await cur.fetchall()
+        logging.info('rows returned: %s' % len(rs))
+        return rs
+
+# insert,update,deleta语句
+async def execute(sql, args, autocommit=True):
+    log(sql)
+    async with __pool.get() as conn:
+        if not autocommit:
+            await conn.begin()
+        try:
             async with conn.cursor(aiomysql.DictCursor) as cur:
-            #如果指定数量，返回指定数量的记录，否则返回所有记录
-                await cur.execute(sql.replace('?','%s'),args or())
-                if size:
-                    rs = await cur.fetchmany(size)
-                else:
-                    rs = await cur.fetchall()
-                logging.info('rows returned: %s' % len(rs))
-                return rs
-
-#Insert、Update、Delete操作的公共执行函数
-async def execute(sql,args,autocommit=True):
-        log(sql)
-        async with __pool.get() as conn:
+                await cur.execute(sql.replace('?', '%s'), args)
+                affected = cur.rowcount
             if not autocommit:
-                await conn.begin()
-            try:
-                #创建游标
-                async with conn.cursor(aiomysql.DictCursor) as cur:
-                    #执行sql语句
-                    await cur.execute(sql.replace('?', '%s'),args)
-                    #获取操作的记录数
-                    affected = cur.rowcount
-                if not autocommit:
-                    await conn.commit()
-            except BaseException as e:
-                if not autocommit:
-                    await conn.rollback()
-                raise e
-            finally:
-                conn.close()
-            return affected
+                await conn.commit()
+        except BaseException as e:
+            if not autocommit:
+                await conn.rollback()
+            raise
+        return affected
 
-#构建insert语句占位符
-def creat_args_string(num):
-    '''
-    用来计算需要拼接多少占位符
-    '''
-    L = []
+
+def create_args_string(num):
+    l = []
     for n in range(num):
-        L.append('?')
-    return ','.join(L)
+        l.append('?')
+    return ', '.join(l)
 
-#Field和各种Field子类
+
+# 定义Field类，负责保存(数据库)表的字段名和字段类型
 class Field(object):
 
-    def __init__(self,name,column_type,primary_key,default):
+    def __init__(self, name, colunm_type, primary_key, default):
         self.name = name
-        self.column_type = column_type
+        self.colunm_type = colunm_type
         self.primary_key = primary_key
         self.default = default
 
     def __str__(self):
-        return '<%s, %s:%s>' % (self.__class__.__name__,self.column_type,self.name)
+        return '<%s, %s, %s>' % (self.__class__.__name__, self.colunm_type, self.name)
 
-#映射字符串的StringField
+
 class StringField(Field):
 
-    def __init__(self,name=None,primary_key=False,default=None,ddl='varchar(100)'):
-        super().__init__(name,ddl,primary_key,default)
+    def __init__(self, name=None, primary_key=False, default=None, ddl='varchar(100)'):
+        super().__init__(name, ddl, primary_key, default)
 
-#映射布尔的BooleanField
+
 class BooleanField(Field):
 
-    def __init__(self,name=None,default=False):
-        super().__init__(name,'boolean',False,default)
+    def __init__(self, name=None, default=False):
+        super().__init__(name, 'boolean', False, default)
 
-#映射整型的IntegerField
+
 class IntegerField(Field):
 
-    def __init__(self,name=None,primary_key=False,default=0):
-        super().__init__(name,'bigint',primary_key,default)
+    def __init__(self, name=None, primary_key=False, default=0):
+        super().__init__(name, 'bigint', primary_key, default)
 
-#映射浮点的FloatField
+
 class FloatField(Field):
 
-    def __init__(self,name=None,primary_key=False,default=0.0):
-        super().__init__(name,'real',primary_key,default)
+    def __init__(self, name=None, primary_key=False, default=0.0):
+        super().__init__(name, 'real', primary_key, default)
 
-#映射文本域的TextField
+
 class TextField(Field):
 
-    def __init__(self,name=None,default=None):
-        super().__init__(name,'text',False,default)
+    def __init__(self, name=None, default=None):
+        super().__init__(name, 'text', False, default)
 
-#读取映射信息的ModelMetaclass
+
 class ModelMetaclass(type):
-
-    def __new__( cls, name, bases, attrs):
-        #排除Model本身
-        if name== 'Model':
-            return type.__new__(cls,name,bases,attrs)
-        #获取table名称
-        tableName = attrs.get('__table__',None) or name
-        logging.info('found model: %s (table: %s)' % (name,tableName))
-        #获取所有的Field和主键名
-        mappings = dict()
+    # 调用__init__方法前会调用__new__方法
+    # 1.当前准备创建的类的对象  2.类的名字 3.类继承的父类集合 4.类的方法集合
+    def __new__(cls, name, bases, attrs):
+        if name == 'Model':
+            return type.__new__(cls, name, bases, attrs)
+        # 如果没设置__table__属性，tablename就是类的名字
+        tableName = attrs.get('__table__', None) or name
+        logging.info('found model: %s (table: %s)' % (name, tableName))
+        mappings = {}
         fields = []
-        primaryKey = None
-        for k,v in attrs.items():
-            if isinstance(v,Field):
-                logging.info('found mappings:%s ==> %s'% (k,v))
+        primarykey = None
+        # 键是列名，值是field子类
+        for k, v in attrs.items():
+            if isinstance(v, Field):
+                logging.info('  found mapping: %s ==> %s' % (k, v))
+                # 把键值对存入mapping字典中
                 mappings[k] = v
                 if v.primary_key:
                     #找到主键
-                    if primaryKey:
-                        raise RuntimeError('Duplicate primary key for field: %s' % k)
-                    primaryKey = k
+                    if primarykey:
+                        raise Exception('Duplicate primary key for field: %s' % k)
+                    primarykey = k
                 else:
                     fields.append(k)
-            if not primaryKey:
-                raise RuntimeError('Primary key not found.')
-            #清空attrs
-            for k in mappings.keys():
-                attrs.pop(k)
-            escaped_fields = list(map(lambda f: '`%s`' %f,fields))
-            #保存属性和列的映射关系
-            attrs['__mappings__'] = mappings #保留属性和字段信息的映射关系
-            attrs['__table__'] = tableName
-            attrs['__primary_key__'] = primaryKey #主键属性名
-            attrs['__fields__'] = fields #除主键外的属性名
-            #构造默认的CRUD操作
-            selectParams = ','.join(escaped_fields)
-            insertParams = ','.join(escaped_fields)
-            insertValues = create_args_string(len(escaped_fields)+1)
-            updateParamsAndValues = ','.join(map(lambda f:'`%s`=?' % (mappings.get(f).name or f),fields))
+        if not primarykey:
+            raise Exception('Primary key not found.')
+        # 删除类属性
+        for k in mappings.keys():
+            attrs.pop(k)
+        # 保存除主键外的属性名为``（运算出字符串）列表形式
+        escaped_fields = list(map(lambda f: '`%s`' % f, fields))
+        attrs['__mappings__'] = mappings  # 保存属性和列的映射关系
+        attrs['__table__'] = tableName
+        attrs['__primary_key__'] = primarykey  # 主键属性名
+        attrs['__fields__'] = fields  # 除主键外的属性名
+        # 反引号和repr()函数功能一致
+        attrs['__select__'] = 'select `%s`, %s from `%s`' % (primarykey, ', '.join(escaped_fields), tableName)
+        attrs['__insert__'] = 'insert into `%s` (%s, `%s`) values (%s)' % (
+        tableName, ', '.join(escaped_fields), primarykey, create_args_string(len(escaped_fields) + 1))
+        attrs['__update__'] = 'update `%s` set %s where `%s`=?' % (
+        tableName, ', '.join(map(lambda f: '`%s`=?' % (mappings.get(f).name or f), fields)), primarykey)
+        attrs['__delete__'] = 'delete from `%s` where `%s`=?' % (tableName, primarykey)
+        return type.__new__(cls, name, bases, attrs)
 
-            #构造默认的SELECT,INSERT,UPDATE和DELETE语句:
-            attrs['__select__'] = 'select `%s`, %s from `%s`' % (primaryKey, ', '.join(escaped_fields), tableName)
-            attrs['__insert__'] = 'insert into `%s` (%s, `%s`) values (%s)' % (
-            tableName, ', '.join(escaped_fields), primaryKey, create_args_string(len(escaped_fields) + 1))
-            attrs['__update__'] = 'update `%s` set %s where `%s`=?' % (
-            tableName, ', '.join(map(lambda f: '`%s`=?' % (mappings.get(f).name or f), fields)), primaryKey)
-            attrs['__delete__'] = 'delete from `%s` where `%s`=?' % (tableName, primaryKey)
-            return type.__new__(cls, name, bases, attrs)
-#定义所有ORM映射的基类
-class Model(dict,metaclass=ModelMetaclass):
-    
-    def __init__(self,**kw):
-        super(Model,self).__init__(**kw)
+
+class Model(dict, metaclass=ModelMetaclass):
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
 
     def __getattr__(self, key):
         try:
             return self[key]
-        except KeyError as e:
+        except KeyError:
             raise AttributeError(r"'Model' object has no attribute '%s'" % key)
 
     def __setattr__(self, key, value):
         self[key] = value
 
-    def getValue(self,key):
-        return getattr(self,key,None)
+    def getValue(self, key):
+        #返回对象的属性,如果没有对应属性则会调用__getattr__
+        return getattr(self, key, None)
 
-    def getValueOrDefault(self,key):
-        value = getattr(self,key,None)
-        #如果没有找到value
+    def getValueOrDefault(self, key):
+        value = getattr(self, key, None)
         if value is None:
-            #从mappings映射集合中找
             field = self.__mappings__[key]
             if field.default is not None:
                 value = field.default() if callable(field.default) else field.default
-                logging.debug('using default value for %s: %s' %(key,str(value)))
-                #using defalt value：使用默认值
-                setattr(self,key,value)
+                logging.debug('using default value for %s: %s' % (key, str(value)))
+                # 把默认属性设置进去
+                setattr(self, key, value)
         return value
 
-#根据为条件查找附带排序字段、条数
-@classmethod
-async def findAll(cls,where=None,args=None,**kw):#往Model类添加class方法，让所有子类都调用
-    
-    '''
-    通过where查找多条记录对象
-    param where:where查询条件
-    param args:sql参数
-    param kw: 查询条件列表
-    return:多条记录集合
-    '''
-    sql = [cls.__select__]
-    #如果where查询条件存在
-    if where:
-        sql.append('where')         #添加where关键字
-        sql.append(where)           #拼接where查询条件
-    if args is None:
-        args = []
-    orderBy = kw.get('orderBy',None)    #获取kw里面的orderby查询条件
-    if orderBy:                         #如果存在orderby
-        sql.append('order by')          #拼接orderBy字符串
-        sql.append(orderBy)             #拼接orderBy查询条件
 
-    limit = kw.get('limit',None)        #获取limit查询条件
-    if limit is not None:
-        sql.append('limit')
-        if isinstance(limit,int):       #如果limit是int类型
-            sql.append('?')             #sql拼接一个占位符
-            args.append(limit)          #将limit调价进参赛列表，之所以添加
-                                        #参数列表之后再进行整合是为了防止sql注入
-        #如果limit是一个tuple类型且长度为2
-        elif isinstance(limit,tuple) and len(limit) == 2:
-            sql.append('?,?')            #sql语句拼接两个占位符
-            args.extend(limit)          #将limit添加进参数列表
-        else:
-            raise ValueError('Invalid limit value: %s' % str(limit))
-    #将args参赛列表注入sql语句之后，传递给select函数进行查询并返回查询结果
-    rs = await select(''.join(sql),args)
-    return [cls(**r) for r in rs]
+    # 类方法的第一个参数是cls,而实例方法的第一个参数是self
+    @classmethod
+    async def findAll(cls, where=None, args=None, **kw):
+        ' find objects by where clause. '
+        sql = [cls.__select__]
+        if where:
+            sql.append('where')
+            sql.append(where)
+        if args is None:
+            args = []
+        orderBy = kw.get('orderBy', None)
+        if orderBy:
+            sql.append('order by')
+            sql.append(orderBy)
+        limit = kw.get('limit', None)
+        if limit is not None:
+            sql.append('limit')
+            if isinstance(limit, int):
+                sql.append('?')
+                args.append(limit)
+            elif isinstance(limit, tuple) and len(limit) == 2:
+                sql.append('?', '?')
+                # extend 接收一个iterable参数
+                args.extend(limit)
+            else:
+                raise ValueError('Invalid limit value: %s' % str(limit))
+        #调用select函数,返回值是从数据库里查找到的数据结果
+        rs = await select(' '.join(sql), args)
+        return [cls(**r) for r in rs]
 
-@classmethod
-#查找某字段
-async def findNumber(cls,selectField,where=None,args=None):
-    #'find number by select and where.'查询某个字段的数量
-    sql = ['select %s _num_ from `%s`' % (selectField,cls.__table__)]
-    if where:
-        sql.append('where')
-        sql.append(where)
-    rs = await select(''.join(sql),args,1)
-    if len(rs) == 0:
-        return None
-    return rs[0]['_num_']
+    @classmethod
+    async def findNumber(cls, selectedField, where=None, args=None):
+        ' find number by select and where. '
+        # 将列名重命名为_num_
+        sql = ['select %s _num_ from `%s`' % (selectedField, cls.__table__)]
+        if where:
+            sql.append('where')
+            sql.append(where)
+        # 限制结果数量为1
+        rs = await select(' '.join(sql), args, 1)
+        if len(rs) == 0:
+            return None
+        return rs[0]['_num_']
 
-#往Model类添加class方法，就可以让所有子类调用class方法
-@classmethod
-async def findById(cls,pk):
-    '''
-    通过id查询
-    param pk:id
-    return:一条记录
-    '''
-    #'find object by primary key.'通过主键查找对象,即通过ID查询
-    rs = await select('%s where `%s`=?' %(cls.__select__,cls.__primary_key__),[pk],1)
-    if len(rs) == 0:
-        return None
-    return cls(**rs[0])
+    @classmethod
+    async def find(cls, pk):
+        ' find object by primary key. '
+        rs = await select('%s where `%s`=?' % (cls.__select__, cls.__primary_key__), [pk], 1)
+        if len(rs) == 0:
+            return None
+        return cls(**rs[0])
 
-@classmethod
-async def findByColum(cls,k,ck):
-    '''
-    通过指定字段查询
-    param k:要查询的字段
-    param ck:查询字段对应的值
-    return:一条记录
-    '''
-    fi = None
-    for field in cls.__fields__:        #遍历属性列表看有没有这个属性
-        if k == field:                  #找到了就赋值给fi然后退出循环
-            fi=field
-            break
-    if fi is None:
-        raise AttributeError('The field was not found in %s：' % cls.__table__)
+    async def save(self):
+        # 获取所有value
+        args = list(map(self.getValueOrDefault, self.__fields__))
+        args.append(self.getValueOrDefault(self.__primary_key__))
+        rows = await execute(self.__insert__, args)
+        if rows != 1:
+            logging.warning('failed to insert record: affected rows: %s' % rows)
 
-    rs = await select('%s where `s`=?' % (cls.__select__,fi), [ck],1)
-    if len(rs) == 0:
-        return None
-    return cls(**rs[0])
+    async def update(self):
+        args = list(map(self.getValue, self.__fields__))
+        args.append(self.getValue(self.__primary_key__))
+        rows = await execute(self.__update__, args)
+        if rows != 1:
+            logging.warning('failed to update by primary key: affected rows: %s' % rows)
 
-#往Model类添加实例方法，就可以让所有子类调用示例方法
-async def save(self):
-    #将__fields__保存的除主键外的所有属性一次传递到getValueOrDefault函数中获取值
-    args = list(map(self.getValueOrDefault,slef.__fields__))
-    #获取主键值
-    args.append(self.getValueOrDefault(self.__primary_key__))
-    #执行insert sql语句
-    rows = await execute(self.__insert__,args)
-    if rows !=1:
-        logging.warning('failed to insert record:affected rows: %s' % rows)
-
-#update处理
-async def update(self):
-    args = list(map(self.getValue,self.__fields__))
-    args.append(self.getValue(self.__primary_key__))
-    rows = await execute(self.__update__,args)
-    if rows !=1:
-        logging.warning('failed to update by primary key: affected rows: %s' % rows)
-
-#删除记录
-async def remove(self):
-    args = [self.getValue(self.__primary_key__)]
-    rows = await execute(self.__delete__,args)
-    if rows !=1:
-        logging.warning('failed to remove by primary key: affected rows: %s' % rows)
+    async def remove(self):
+        args = [self.getValue(self.__primary_key__)]
+        rows = await execute(self.__delete__, args)
+        if rows != 1:
+            logging.warning('failed to remove by primary key: affected rows: %s' % rows)
