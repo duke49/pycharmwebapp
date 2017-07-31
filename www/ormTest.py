@@ -36,6 +36,10 @@ loop = asyncio.get_event_loop()
 
 async def find():
     await orm.create_pool(loop, user='root', password='123456', db='awesome')
+    User(name='Administrator', email='admin@example.com', passwd='123456', image='about:blank')
+    #User(name='Duke',email='duke@example.com',passwd='123456',image='about:blank')
+    #User(name='Test',email='test@example.com',passwd='123456',image='about:blank')
+    #await u.save()
     all = await User.findAll()
     print(all)
     pk = await User.find('00149276202953187d8d3176f894f1fa82d9caa7d36775a000')
