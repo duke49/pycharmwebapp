@@ -15,6 +15,8 @@ from jinja2 import Environment, FileSystemLoader
 import orm
 from coroweb import add_routes, add_static
 
+from handlers import cookie2user,COOKIE_NAME
+
 def init_jinja2(app, **kw):
     logging.info('init jinja2...')
     options = dict(
@@ -122,7 +124,7 @@ def datetime_filter(t):
     return '%s年%s月%s日' % (dt.year, dt.month, dt.day)
 
 async def init(loop):
-    await orm.create_pool(loop=loop, **configs.db)
+    await orm.create_pool(loop=loop, host='127.0.0.1',user='root',password='123456',db='awesome')
     app = web.Application(loop=loop, middlewares=[
         logger_factory, auth_factory, response_factory
     ])
